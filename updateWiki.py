@@ -2,11 +2,24 @@
 # coding: utf-8
 
 # updateWiki.py
+# Version 1.2
+
+# HISTORY
+# Version 1.2
+    # added episode title quality check via sanitizeTitle function
+    # TODO: send alert via email if title breaks in an unexpected way
+    
+# Version 1.1
+    # implemented config file with username & password info
+
 # Version 1.0
+    # initial version. Uses information from pgenpod rss feed to update pgenpod wiki.
+
 
 from bs4 import BeautifulSoup
+import configparser
 import feedparser
-from mwclient import Site
+import mwclient
 import time
 # DOCS
 # beautifulsoup: https://www.crummy.com/software/BeautifulSoup/bs4/doc/#
@@ -18,55 +31,85 @@ def main():
     #GRAB RSS FEED
     d = feedparser.parse('https://pgenpod.com/updates?format=rss')
 
-    #CONNECT TO WIKI
-    site = Site('perfectlygeneric.fandom.com', path = '/')
-    site.login('[USERNAME]','[PASSWORD]')
+    #CONNECT TO WIKI & LOG IN
+    site = mwclient.Site('perfectlygeneric.fandom.com', path = '/')
+    config = configparser.ConfigParser()
+    config.read_file(open('pgenbot.ini'))
+    user = config['PGEN']['User']
+    password = config['PGEN']['Pass']
+    site.login(user, password)
 
     #FIND LAST EPISODE ALREADY ON WIKI
     lastOldIndex = 0
     for i in range(len(d.entries)):
-        if site.pages[d.entries[i].title].exists:
+        pageTitle = sanitizeTitle(d.entries[i])
+        try:
+            site.pages[pageTitle].exists
+        except mwclient.errors.InvalidPageTitle:
+            print("Episode title is invalid:\n\t{}".format(pageTitle))
+            return
+            # TODO: SEND EMAIL ABOUT THIS
+        
+        
+        if site.pages[pageTitle].exists:
             lastOldIndex = i
             break
 
-    print("Newest episode is {}".format(d.entries[0].title))
-    print("Wiki has every episode through {}".format(d.entries[lastOldIndex].title))
+    print("Newest episode is {}".format(sanitizeTitle(d.entries[0])))
+    print("Wiki has every episode through {}".format(sanitizeTitle(d.entries[lastOldIndex])))
 
     #for each new episode, from oldest to newest
     for i in reversed(range(lastOldIndex)):
-        print("Adding episode to wiki: {}".format(d.entries[i].title))
+        print("Adding episode to wiki: {}".format(sanitizeTitle(d.entries[i])))
 
         #COLLECT METADATA
         epdata = metadata(d,i)
 
         #UPLOAD IMAGE
+        #...if it's not already there
         fn = epdata['image'].split('/')[-1]
         if site.images[fn].imageinfo == {}:
             site.upload(url=epdata['image'], filename=epdata['image'].split('/')[-1])
 
         #UPDATE PREVIOUS EPISODE'S WIKI PAGE
-        #...but only if it still needs to be done
+        #...if that's not already done
         prevpage = site.pages[epdata['previous'][2:-2]].text()
         if epdata['title'] not in prevpage:
             splitpage = prevpage.split('|next=')
             newPreviousPage = '|next=[[{}]]'.format(epdata['title']).join(splitpage)
             site.pages[epdata['previous'][2:-2]].edit(newPreviousPage,'Added next episode')
 
-        #FORMAT INFO FOR WIKI
-        epwiki = wikiformat(epdata)
-
         #CREATE PAGE ON WIKI
-        #...but only if it still needs to be done
+        #...if that's not already done
         if not site.pages[epdata['title']].exists:
+            epwiki = wikiformat(epdata)
             site.pages[epdata['title']].edit(epwiki,'Created page')
 
         #UPDATE WIKI PAGE OF PODCAST ITSELF
+        #...if that's not already done
         episodeListPage = site.pages['Perfectly Generic Podcast'].text()
         if epdata['title'] not in episodeListPage:
             newEpisodeListPage = mainpagetext(episodeListPage,epdata)
             site.pages['Perfectly Generic Podcast'].edit(newEpisodeListPage,'Updated episode list')
 
     print("done")
+    ########
+
+
+def sanitizeTitle(episode: feedparser.FeedParserDict) -> str:
+    # Sanitize title: remove junk before episode titles
+        # This includes "[I]ntermission/" for Bonus Episodes
+        # This also includes, for example, "[CORRECTED]" for Episode 94
+        
+    rawTitle = episode.title
+
+    if "bonus" in episode.link:
+        okTitle = rawTitle[rawTitle.find("Bonus"):]
+        #return okTitle
+    else:
+        okTitle = rawTitle[rawTitle.find("Episode"):]
+    
+    return okTitle
 
 
 def metadata(feed: feedparser.FeedParserDict, item: int) -> dict:
@@ -77,7 +120,7 @@ def metadata(feed: feedparser.FeedParserDict, item: int) -> dict:
     md = {}
 
     #TITLE
-    md['title'] = episode.title
+    md['title'] = sanitizeTitle(episode)
 
     #IMAGE LINK
     md['image'] = episode.image.href
@@ -105,14 +148,16 @@ def metadata(feed: feedparser.FeedParserDict, item: int) -> dict:
     if item == len(feed.entries)-1:
         prev_ep = ""
     else:
-        prev_ep = "[[{}]]".format(feed.entries[item+1].title)
+        prevTitle = sanitizeTitle(feed.entries[item+1])
+        prev_ep = "[[{}]]".format(prevTitle)
     md['previous'] = prev_ep
     
     #NEXT
     if item == 0:
         next_ep = ""
     else:
-        next_ep = "[[{}]]".format(feed.entries[item-1].title)
+        nextTitle = sanitizeTitle(feed.entries[item-1])
+        next_ep = "[[{}]]".format(nextTitle)
     md['next'] = next_ep    
     
     #SUMMARY
