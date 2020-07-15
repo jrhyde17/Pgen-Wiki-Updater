@@ -2,9 +2,17 @@
 # coding: utf-8
 
 # updateWiki.py
-# Version 1.2
+# Version 1.3
+
+# ABOUT
+# This script accesses the pgenpod RSS feed at https://pgenpod.com/updates?format=rss and
+# uses the updates there to update the pgenpod wiki at https://perfectlygeneric.fandom.com
 
 # HISTORY
+# Version 1.3
+    # added email alerts when titles break quality check and when new episodes are added.
+    # added ABOUT.
+
 # Version 1.2
     # added episode title quality check via sanitizeTitle function
     # TODO: send alert via email if title breaks in an unexpected way
@@ -15,11 +23,11 @@
 # Version 1.0
     # initial version. Uses information from pgenpod rss feed to update pgenpod wiki.
 
-
 from bs4 import BeautifulSoup
 import configparser
 import feedparser
 import mwclient
+import smtplib
 import time
 # DOCS
 # beautifulsoup: https://www.crummy.com/software/BeautifulSoup/bs4/doc/#
@@ -44,20 +52,26 @@ def main():
     for i in range(len(d.entries)):
         pageTitle = sanitizeTitle(d.entries[i])
         try:
-            site.pages[pageTitle].exists
+            if site.pages[pageTitle].exists:
+                lastOldIndex = i
+                break
+        #If title would break wiki, send email and end program
         except mwclient.errors.InvalidPageTitle:
-            print("Episode title is invalid:\n\t{}".format(pageTitle))
+            errmsg = "Unacceptable episode title:\n{}".format(pageTitle)
+            print(errmsg)
+            server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+            user = config['GMAIL']['User']
+            password = config['GMAIL']['Pass']
+            server.login(user,password)
+            server.sendmail(user,user,"Subject:updateWiki error\n\n{}".format(errmsg))
+            server.close
+            print("Exiting script")
             return
-            # TODO: SEND EMAIL ABOUT THIS
         
-        
-        if site.pages[pageTitle].exists:
-            lastOldIndex = i
-            break
-
     print("Newest episode is {}".format(sanitizeTitle(d.entries[0])))
     print("Wiki has every episode through {}".format(sanitizeTitle(d.entries[lastOldIndex])))
-
+    
+    
     #for each new episode, from oldest to newest
     for i in reversed(range(lastOldIndex)):
         print("Adding episode to wiki: {}".format(sanitizeTitle(d.entries[i])))
@@ -92,6 +106,15 @@ def main():
             newEpisodeListPage = mainpagetext(episodeListPage,epdata)
             site.pages['Perfectly Generic Podcast'].edit(newEpisodeListPage,'Updated episode list')
 
+    #SEND EMAIL IF NEW EPISODES WERE ADDED
+    if lastOldIndex > 0:
+        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+        user = config['GMAIL']['User']
+        password = config['GMAIL']['Pass']
+        server.login(user,password)
+        server.sendmail(user,user,"Subject:updateWiki notification\n\nNew episode(s) added")
+        server.close
+        
     print("done")
     ########
 
